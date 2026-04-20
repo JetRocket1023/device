@@ -10,7 +10,7 @@ def get_db_connection():
     return pymysql.connect(
         host=os.getenv("TIDB_HOST"),
         port=int(os.getenv("TIDB_PORT", 4000)),
-        user=os.getenv("TIDB_USER"),
+        uuser=os.getenv("TIDB_USERNAME"),,
         password=os.getenv("TIDB_PASSWORD"),
         database=os.getenv("TIDB_DB"),
         ssl_verify_cert=True,
