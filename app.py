@@ -485,6 +485,78 @@ def edit_created_date():
         conn.close()
 
 
+
+# ══════════════════════════════════════════
+#  ✅ 後台：取消永久授權（改回指定到期日）
+# ══════════════════════════════════════════
+@app.route('/admin/cancel_permanent', methods=['POST'])
+def cancel_permanent():
+    if not check_admin(request):
+        return jsonify({"error": "無管理員權限"}), 403
+
+    content     = request.json or {}
+    tax_id      = content.get("tax_id", "").strip()
+    expired_str = content.get("expired_date", "").strip()
+
+    if not tax_id or not expired_str:
+        return jsonify({"error": "缺少統編或到期日"}), 400
+
+    try:
+        datetime.strptime(expired_str, "%Y-%m-%d")
+    except ValueError:
+        return jsonify({"error": "日期格式錯誤，請使用 YYYY-MM-DD"}), 400
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE license_manager SET expired_date = %s "
+                "WHERE client_id = %s",
+                (expired_str, tax_id)
+            )
+        return jsonify({"status": "success",
+                        "message": f"{tax_id} 永久授權已取消，到期日改為 {expired_str}"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+# ══════════════════════════════════════════
+#  ✅ 後台：刪除客戶（同時刪除設備資料）
+# ══════════════════════════════════════════
+@app.route('/admin/delete_license', methods=['POST'])
+def delete_license():
+    if not check_admin(request):
+        return jsonify({"error": "無管理員權限"}), 403
+
+    tax_id = (request.json or {}).get("tax_id", "").strip()
+    if not tax_id:
+        return jsonify({"error": "缺少統編"}), 400
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 先刪除該客戶的設備資料
+            cursor.execute(
+                "DELETE FROM equipment_master WHERE client_id = %s",
+                (tax_id,)
+            )
+            eq_count = cursor.rowcount
+            # 再刪除授權記錄
+            cursor.execute(
+                "DELETE FROM license_manager WHERE client_id = %s",
+                (tax_id,)
+            )
+        return jsonify({
+            "status":  "success",
+            "message": f"{tax_id} 已刪除，同時清除 {eq_count} 筆設備資料"
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
