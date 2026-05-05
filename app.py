@@ -10,7 +10,7 @@ app = Flask(__name__)
 # ══════════════════════════════════════════
 #  TiDB 連線
 #  實際欄位：license_key, client_id, company_name,
-#            is_active, created_at, expired_date
+#            is_active, created_date, expired_date
 # ══════════════════════════════════════════
 def get_db_connection():
     return pymysql.connect(
@@ -261,7 +261,7 @@ def create_license():
             cursor.execute("""
                 INSERT INTO license_manager
                     (license_key, client_id, company_name,
-                     is_active, created_at, expired_date)
+                     is_active, created_date, expired_date)
                 VALUES (%s, %s, %s, TRUE, %s, %s)
             """, (license_key, tax_id, company_name,
                   str(created), str(expired)))
@@ -294,9 +294,9 @@ def list_licenses():
         with conn.cursor() as cursor:
             cursor.execute("""
                 SELECT client_id, company_name, license_key,
-                       is_active, expired_date, created_at
+                       is_active, expired_date, created_date
                 FROM license_manager
-                ORDER BY created_at DESC
+                ORDER BY created_date DESC
             """)
             rows = cursor.fetchall()
 
@@ -473,7 +473,7 @@ def edit_created_date():
     try:
         with conn.cursor() as cursor:
             cursor.execute(
-                "UPDATE license_manager SET created_at = %s "
+                "UPDATE license_manager SET created_date = %s "
                 "WHERE client_id = %s",
                 (created_date, tax_id)
             )
