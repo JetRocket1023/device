@@ -9,7 +9,7 @@ app = Flask(__name__)
 
 # ══════════════════════════════════════════
 #  TiDB 連線
-#  實際欄位：license_key, client_id, client_name,
+#  實際欄位：license_key, client_id, company_name,
 #            is_active, created_at, expired_date
 # ══════════════════════════════════════════
 def get_db_connection():
@@ -66,7 +66,7 @@ def verify_license():
     try:
         with conn.cursor() as cursor:
             cursor.execute("""
-                SELECT client_id, client_name, expired_date, is_active
+                SELECT client_id, company_name, expired_date, is_active
                 FROM license_manager
                 WHERE license_key = %s
             """, (received_key,))
@@ -76,7 +76,7 @@ def verify_license():
                 return jsonify({"valid": False,
                                 "reason": "金鑰不存在"}), 403
 
-            client_id, client_name, expired_date, is_active = row
+            client_id, company_name, expired_date, is_active = row
 
             if not is_active:
                 return jsonify({"valid": False,
@@ -92,7 +92,7 @@ def verify_license():
                 return jsonify({
                     "valid":        True,
                     "client_id":    client_id,
-                    "company_name": client_name,
+                    "company_name": company_name,
                     "expired_date": "永久授權",
                     "days_left":    99999,
                     "is_permanent": True
@@ -109,7 +109,7 @@ def verify_license():
             return jsonify({
                 "valid":        True,
                 "client_id":    client_id,
-                "company_name": client_name,
+                "company_name": company_name,
                 "expired_date": str(expired),
                 "days_left":    days_left,
                 "is_permanent": False
@@ -293,25 +293,35 @@ def list_licenses():
     try:
         with conn.cursor() as cursor:
             cursor.execute("""
-                SELECT client_id, client_name, license_key,
+                SELECT client_id, company_name, license_key,
                        is_active, expired_date, created_at
                 FROM license_manager
                 ORDER BY created_at DESC
-            """)  # client_name = 公司名稱（對應實際欄位）
+            """)
             rows = cursor.fetchall()
 
         today   = date.today()
         clients = []
         for r in rows:
-            exp = to_date(r[4])
+            try:
+                exp = to_date(r[4])
+                # ✅ 永久授權（9999-12-31）特殊處理，不做天數計算
+                is_permanent = (exp.year == 9999)
+                days_left    = 99999 if is_permanent else (exp - today).days
+                exp_str      = str(exp)
+            except Exception:
+                exp_str      = str(r[4]) if r[4] else ""
+                is_permanent = False
+                days_left    = 0
+
             created = str(r[5])[:10] if r[5] else ""
             clients.append({
                 "client_id":    r[0],
                 "company_name": r[1],
                 "license_key":  r[2],
                 "is_active":    bool(r[3]),
-                "expired_date": str(exp),
-                "days_left":    (exp - today).days,
+                "expired_date": exp_str,
+                "days_left":    days_left,
                 "created_date": created
             })
 
@@ -380,7 +390,15 @@ def extend_license():
             if not row:
                 return jsonify({"error": "找不到此統編"}), 404
 
-            base     = max(to_date(row[0]), date.today())
+            old_exp = to_date(row[0])
+
+            # ✅ 永久授權不允許延長
+            if old_exp.year == 9999:
+                return jsonify({
+                    "error": "此客戶為永久授權，無需延長"
+                }), 400
+
+            base     = max(old_exp, date.today())
             new_year = base.year + (base.month + months - 1) // 12
             new_mon  = (base.month + months - 1) % 12 + 1
             new_exp  = date(new_year, new_mon, base.day)
