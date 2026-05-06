@@ -817,6 +817,59 @@ def delete_user():
         conn.close()
 
 
+
+# ══════════════════════════════════════════
+#  ✅ 後台：延長授權（支援天數）
+# ══════════════════════════════════════════
+@app.route('/admin/extend_by_days', methods=['POST'])
+def extend_by_days():
+    if not check_admin(request):
+        return jsonify({"error": "無管理員權限"}), 403
+
+    content = request.json or {}
+    tax_id  = content.get("tax_id", "").strip()
+    days    = int(content.get("days", 7))
+
+    if not tax_id:
+        return jsonify({"error": "缺少統編"}), 400
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT expired_date FROM license_manager WHERE client_id = %s",
+                (tax_id,))
+            row = cursor.fetchone()
+            if not row:
+                return jsonify({"error": "找不到此統編"}), 404
+
+            old_exp = to_date(row[0])
+
+            if old_exp.year == 9999:
+                return jsonify({"error": "此客戶為永久授權，無需延長"}), 400
+
+            # 從今天或舊到期日（取較大值）往後加天數
+            from datetime import timedelta
+            base    = max(old_exp, date.today())
+            new_exp = base + timedelta(days=days)
+
+            cursor.execute(
+                "UPDATE license_manager SET expired_date = %s "
+                "WHERE client_id = %s",
+                (str(new_exp), tax_id))
+
+        return jsonify({
+            "status":      "success",
+            "tax_id":      tax_id,
+            "new_expired": str(new_exp),
+            "added_days":  days
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
