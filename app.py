@@ -557,6 +557,260 @@ def delete_license():
         conn.close()
 
 
+
+# ══════════════════════════════════════════
+#  密碼 Hash 工具
+# ══════════════════════════════════════════
+import hashlib
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+# ══════════════════════════════════════════
+#  ✅ 使用者登入驗證
+#  雲端版軟體啟動時呼叫
+# ══════════════════════════════════════════
+@app.route('/login', methods=['POST'])
+def login():
+    content  = request.json or {}
+    lic_key  = content.get("key", "").strip()
+    username = content.get("username", "").strip()
+    password = content.get("password", "").strip()
+
+    if not lic_key or not username or not password:
+        return jsonify({"error": "缺少金鑰、帳號或密碼"}), 400
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 1. 先驗證公司授權金鑰
+            cursor.execute("""
+                SELECT client_id, company_name, expired_date, is_active
+                FROM license_manager
+                WHERE license_key = %s
+            """, (lic_key,))
+            lic = cursor.fetchone()
+            if not lic:
+                return jsonify({"valid": False,
+                                "reason": "授權金鑰不存在"}), 403
+            client_id, company_name, expired_date, is_active = lic
+            if not is_active:
+                return jsonify({"valid": False,
+                                "reason": "授權已停用"}), 403
+
+            exp = to_date(expired_date)
+            is_permanent = (exp.year == 9999)
+            if not is_permanent and (exp - date.today()).days < 0:
+                return jsonify({"valid": False,
+                                "reason": f"授權已於 {exp} 到期"}), 403
+
+            # 2. 驗證使用者帳號密碼
+            pw_hash = hash_password(password)
+            cursor.execute("""
+                SELECT id, display_name, role, is_active
+                FROM users
+                WHERE client_id = %s AND username = %s AND password = %s
+            """, (client_id, username, pw_hash))
+            user = cursor.fetchone()
+            if not user:
+                return jsonify({"valid": False,
+                                "reason": "帳號或密碼錯誤"}), 403
+            user_id, display_name, role, user_active = user
+            if not user_active:
+                return jsonify({"valid": False,
+                                "reason": "此帳號已停用"}), 403
+
+            days_left = 99999 if is_permanent else (exp - date.today()).days
+
+            return jsonify({
+                "valid":        True,
+                "client_id":    client_id,
+                "company_name": company_name,
+                "expired_date": "永久授權" if is_permanent else str(exp),
+                "days_left":    days_left,
+                "is_permanent": is_permanent,
+                "username":     username,
+                "display_name": display_name,
+                "role":         role,
+            }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+# ══════════════════════════════════════════
+#  ✅ 後台：新增使用者
+# ══════════════════════════════════════════
+@app.route('/admin/create_user', methods=['POST'])
+def create_user():
+    if not check_admin(request):
+        return jsonify({"error": "無管理員權限"}), 403
+
+    content      = request.json or {}
+    tax_id       = content.get("tax_id", "").strip()
+    username     = content.get("username", "").strip()
+    password     = content.get("password", "").strip()
+    display_name = content.get("display_name", "").strip()
+    role         = content.get("role", "user").strip()
+
+    if not all([tax_id, username, password, display_name]):
+        return jsonify({"error": "所有欄位均為必填"}), 400
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 確認公司存在
+            cursor.execute(
+                "SELECT client_id FROM license_manager WHERE client_id = %s",
+                (tax_id,))
+            if not cursor.fetchone():
+                return jsonify({"error": f"找不到統編 {tax_id}"}), 404
+
+            # 檢查帳號是否重複
+            cursor.execute(
+                "SELECT id FROM users WHERE client_id=%s AND username=%s",
+                (tax_id, username))
+            if cursor.fetchone():
+                return jsonify({"error": f"帳號「{username}」已存在"}), 409
+
+            cursor.execute("""
+                INSERT INTO users
+                    (client_id, username, password, display_name,
+                     role, is_active, created_date)
+                VALUES (%s, %s, %s, %s, %s, TRUE, %s)
+            """, (tax_id, username, hash_password(password),
+                  display_name, role, str(date.today())))
+
+        return jsonify({"status": "success",
+                        "message": f"使用者「{display_name}」已建立"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+# ══════════════════════════════════════════
+#  ✅ 後台：列出某公司所有使用者
+# ══════════════════════════════════════════
+@app.route('/admin/list_users', methods=['POST'])
+def list_users():
+    if not check_admin(request):
+        return jsonify({"error": "無管理員權限"}), 403
+
+    tax_id = (request.json or {}).get("tax_id", "").strip()
+    if not tax_id:
+        return jsonify({"error": "缺少統編"}), 400
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT username, display_name, role,
+                       is_active, created_date
+                FROM users
+                WHERE client_id = %s
+                ORDER BY created_date ASC
+            """, (tax_id,))
+            rows = cursor.fetchall()
+
+        users = [{
+            "username":     r[0],
+            "display_name": r[1],
+            "role":         r[2],
+            "is_active":    bool(r[3]),
+            "created_date": str(r[4])[:10] if r[4] else "",
+        } for r in rows]
+
+        return jsonify({"status": "success", "users": users}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+# ══════════════════════════════════════════
+#  ✅ 後台：停用 / 啟用使用者
+# ══════════════════════════════════════════
+@app.route('/admin/toggle_user', methods=['POST'])
+def toggle_user():
+    if not check_admin(request):
+        return jsonify({"error": "無管理員權限"}), 403
+
+    content   = request.json or {}
+    tax_id    = content.get("tax_id", "").strip()
+    username  = content.get("username", "").strip()
+    is_active = content.get("is_active", True)
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE users SET is_active=%s "
+                "WHERE client_id=%s AND username=%s",
+                (is_active, tax_id, username))
+        status = "啟用" if is_active else "停用"
+        return jsonify({"status": "success",
+                        "message": f"{username} 已{status}"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+# ══════════════════════════════════════════
+#  ✅ 後台：重設使用者密碼
+# ══════════════════════════════════════════
+@app.route('/admin/reset_password', methods=['POST'])
+def reset_password():
+    if not check_admin(request):
+        return jsonify({"error": "無管理員權限"}), 403
+
+    content      = request.json or {}
+    tax_id       = content.get("tax_id", "").strip()
+    username     = content.get("username", "").strip()
+    new_password = content.get("new_password", "").strip()
+
+    if not all([tax_id, username, new_password]):
+        return jsonify({"error": "缺少必要欄位"}), 400
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE users SET password=%s "
+                "WHERE client_id=%s AND username=%s",
+                (hash_password(new_password), tax_id, username))
+        return jsonify({"status": "success",
+                        "message": f"{username} 密碼已重設"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+# ══════════════════════════════════════════
+#  ✅ 後台：刪除使用者
+# ══════════════════════════════════════════
+@app.route('/admin/delete_user', methods=['POST'])
+def delete_user():
+    if not check_admin(request):
+        return jsonify({"error": "無管理員權限"}), 403
+
+    content  = request.json or {}
+    tax_id   = content.get("tax_id", "").strip()
+    username = content.get("username", "").strip()
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM users WHERE client_id=%s AND username=%s",
+                (tax_id, username))
+        return jsonify({"status": "success",
+                        "message": f"{username} 已刪除"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
