@@ -152,11 +152,23 @@ def sync_data():
             sql = """
                 INSERT INTO equipment_master
                 (client_id, school, classroom, brand, device_name,
-                 model, serial, mac_address, finish_date, warranty_years)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 model, serial, mac_address, finish_date, warranty_years,
+                 created_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             for row in data_list:
-                cursor.execute(sql, (client_id, *row))
+                # row 可能是 9 欄（舊格式）或 10 欄（含 created_by）
+                if len(row) >= 10:
+                    vals = (client_id,
+                            row[0], row[1], row[2], row[3],
+                            row[4], row[5], row[6], row[7], row[8],
+                            row[9])   # created_by
+                else:
+                    vals = (client_id,
+                            row[0], row[1], row[2], row[3],
+                            row[4], row[5], row[6], row[7], row[8],
+                            "")        # 舊資料沒有 created_by
+                cursor.execute(sql, vals)
 
         return jsonify({"status": "success", "client": client_id}), 200
 
@@ -193,7 +205,8 @@ def pull_data():
                 SELECT school, classroom, brand, device_name, model,
                        serial, mac_address,
                        DATE_FORMAT(finish_date, '%%Y-%%m-%%d'),
-                       warranty_years
+                       warranty_years,
+                       IFNULL(created_by, '')
                 FROM equipment_master
                 WHERE client_id = %s
                 ORDER BY id ASC
