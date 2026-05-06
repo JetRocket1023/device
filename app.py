@@ -237,9 +237,15 @@ def create_license():
     except ValueError:
         created = today
 
-    # 到期日
+    # 到期日（優先使用直接傳入的 expired_date，例如試用期）
+    direct_exp = content.get("expired_date", "").strip()
     if is_permanent:
-        expired = date(9999, 12, 31)   # 永久授權
+        expired = date(9999, 12, 31)
+    elif direct_exp:
+        try:
+            expired = datetime.strptime(direct_exp, "%Y-%m-%d").date()
+        except ValueError:
+            expired = today
     else:
         exp_year  = today.year + (today.month + months - 1) // 12
         exp_month = (today.month + months - 1) % 12 + 1
